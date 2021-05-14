@@ -1,3 +1,4 @@
+from numpy.lib.histograms import histogram
 import tensorflow as tf
 import tensorflow.compat.v1 as v1
 import numpy as np
@@ -8,12 +9,13 @@ import os, sys, shutil, glob
 import subprocess
 from tensorflow.keras import losses
 import tensorflow.keras.metrics as Metrics
+from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint, ReduceLROnPlateau, CSVLogger, TensorBoard
 
 # tf.enable_v2_behavior()
 
 # os.environ['TF_CPP_MIN_LOG_LEVEL']='2'
 # from tensorflow.python.client import device_lib
-from utils.data_loader import  Data_loader
+from utils.data_loader import  Data_loader, onEachEpochCheckPoint
 # from utils import model_loader
 from models import siamese
 # import helpers
@@ -35,7 +37,7 @@ parser.add_argument('--save', type=int, default=4, help='Interval for saving wei
 parser.add_argument('--gpu', type=str, default='0', help='Choose GPU device to be used')
 parser.add_argument('--mode', type=str, default="train", help='Select "train", "test", or "predict" mode. \
     Note that for prediction mode you have to specify an image to run the model on.')
-parser.add_argument('--checkpoint', type=str, default="checkpoint", help='Checkpoint folder.')
+parser.add_argument('--checkpoint', type=str, default="./checkpoint", help='Checkpoint folder.')
 parser.add_argument('--class_balancing', type=str2bool, default=False, help='Whether to use median frequency class weights to balance the classes in the loss')
 parser.add_argument('--image', type=str, default=None, help='The image you want to predict on. Only valid in "predict" mode.')
 parser.add_argument('--continue_training', type=str2bool, default=False, help='Whether to continue training from a checkpoint')
@@ -59,12 +61,6 @@ gpu = str(args.gpu)
 os.environ['CUDA_VISIBLE_DEVICES']=  gpu
 
 
-# g = v1.Graph()
-
-# with g.as_default():
-# inputs = v1.placeholder(dtype=v1.float32, shape=(4))
-# outputs = v1.placeholder(dtype=v1.float32, shape=(4))
-
 def load_datasets(path_dataset, batch_size):
     datasets = Data_loader(path_dataset, batch_size=batch_size)
     return datasets.data_generator(), datasets.data_generator(dataset='val')
@@ -87,6 +83,8 @@ def IoU(y_true, y_pred):
 
 def iou(y_true, y_pred):
      def f(y_true, y_pred):
+        #  intersection = K.sum(y_true_f * y_pred_f, axis=-1)
+        #  union = K.sum(y_true_f + y_pred_f, axis=-1) - intersection
          intersection = (y_true * y_pred).sum()
          union = y_true.sum() + y_pred.sum() - intersection
          x = (intersection + 1e-15) / (union + 1e-15)
@@ -94,17 +92,26 @@ def iou(y_true, y_pred):
          return x
      return tf.numpy_function(f, [y_true, y_pred], tf.float32)
 
+
+
 model_name = args.model
-checkpoint_path = args.checkpoint
+checkpoint_path = args.checkpoint  + '/' + model_name + '/'
+os.makedirs(checkpoint_path, exist_ok=True)
+def samples():
+    train_filenames = [os.path.basename(name) for name in glob.glob(args.dataset + 'train/*')]
+    val_filenames = [os.path.basename(name) for name in glob.glob(args.dataset + 'val/*')]
+    return train_filenames, val_filenames
+
+train_filenames, val_filenams = samples()
 train_data, val_data = load_info()
 n_epochs = args.num_epochs
 # model = model_loader.get_model(model_name)
-model = siamese.Siamese(num_classes=1,  input_shape=( None, None, 3))
+num_classes = 2
+model = siamese.Siamese(num_classes=num_classes,  input_shape=(None, 256, 512, 3))
 ## Metrics
 loss_metric = tf.keras.metrics.Mean(name='train_loss')
-# accuracy_metric = tf.keras.metrics.SparseCategoricalAccuracy(name='train_accuracy')
 loss_fn = tf.keras.losses.BinaryCrossentropy(
-    from_logits=False, label_smoothing=0, reduction="auto", name="binary_crossentropy"
+    from_logits=True, label_smoothing=0, reduction="auto", name="binary_crossentropy"
 )
 
 optimizer = tf.keras.optimizers.Adam(0.0001)
@@ -129,6 +136,7 @@ def train_step(inputs, labels):
 
 save_path = checkpoint_path + '/' + model_name
 dataset_path = args.dataset
+val_path = dataset_path + '/val/'
 def parse_image(img_path:str) -> dict:
 
     image = tf.io.read_file(img_path)
@@ -141,24 +149,34 @@ def parse_image(img_path:str) -> dict:
     mask = tf.where(mask == 255, np.dtype('uint8').type(1), mask)
 
     return {'image': image, 'segmentation_mask': mask}
-SEED = 42
+SEED = 23
 
-train_dataset = tf.data.Dataset.list_files(dataset_path + 'train/' + "*.png", seed=SEED)
-train_dataset = train_dataset.map(parse_image)
-# dataset_path = args.dataset
-val_dataset = tf.data.Dataset.list_files(dataset_path + 'val/' + "*.png", seed=SEED)
-val_dataset =val_dataset.map(parse_image)
-# train_input_names = train_data.train_filenames
-dataset = {'train': train_dataset, 'val':val_dataset}
+callbacks = [
+    ModelCheckpoint(model)
+]
 
+# train_dataset = tf.data.Dataset.list_files(dataset_path + 'train/' + "*.png", seed=SEED)
+# train_dataset = train_dataset.map(parse_image)
+# # dataset_path = args.dataset
+# val_dataset = tf.data.Dataset.list_files(dataset_path + 'val/' + "*.png", seed=SEED)
+# val_dataset =val_dataset.map(parse_image)
+# # train_input_names = train_data.train_filenames
+# dataset = {'train': train_dataset, 'val':val_dataset}
 
-metrics_list = ['accuracy', iou]
+tensorboard = TensorBoard(log_dir=checkpoint_path, histogram_freq=0, write_graph=True, write_images=True)
+weights_path = checkpoint_path + model_name + 'weights_{epoch:02d}.h5'
+model_checkpoint = onEachEpochCheckPoint(model, dataset_path, val_path, checkpoint_path )
+
+metrics_list = ['accuracy',  tf.keras.metrics.Recall(), tf.keras.metrics.Precision(), Metrics.MeanIoU(num_classes=num_classes)]
 model.compile(optimizer=optimizer,
               loss=loss_fn,
               metrics=metrics_list)
 
-model.fit(train_data, epochs=args.num_epochs)
-loss, acc = model.evaluate(test_data)
+model.fit_generator(train_data, 
+                    epochs=args.num_epochs, 
+                    steps_per_epoch=len(train_filenames)//args.batch_size,
+                    callbacks=[model_checkpoint, tensorboard])
+loss, acc = model.evaluate(val_data)
 
 print("Loss {}, Accuracy {}".format(loss, acc))
 
