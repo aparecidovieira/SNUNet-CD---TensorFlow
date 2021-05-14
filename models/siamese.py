@@ -1,8 +1,9 @@
 
 import tensorflow as tf
 from tensorflow.keras import layers, regularizers
-
-
+from tensorflow.keras.layers import Input
+import tensorflow.keras.backend as K
+import numpy as np
 
 def GlobalAvgPool():
     return tf.keras.layers.GlobalAveragePooling2D()
@@ -34,7 +35,10 @@ def separableConv(filters, kernel_size, strides=1, dilation_rate=1, use_bias=Tru
 
 
 def max_pool(pool_size=2, stride=2):
-    return layers.MaxPool2D(pool_size=(pool_size, pool_size), strides=stride)
+    return layers.MaxPool2D(pool_size=(pool_size, pool_size), strides=(stride, stride))
+
+def avg_pool(pool_size=2, stride=2):
+    return layers.AveragePooling2D(pool_size=(pool_size, pool_size), strides=(stride, stride))
 
 # convolution
 def Conv(n_filters, kernel_size=3, strides=1, dilation_rate=1, use_bias=True):
@@ -135,6 +139,12 @@ class Conv_BN(tf.keras.Model):
 
         return x
 
+
+# class AdaptivePool(tf.keras.Model):
+#     def __init__(self, pool_size, kernel_size=3):
+#         super(AdaptivePool, self).__init__()
+
+
 class DepthMaxPool(tf.keras.Model):
     def __init__(self, pool_size, strides=None, padding="VALID", **kwargs):
         super(DepthMaxPool, self).__init__()
@@ -156,11 +166,11 @@ class DepthMaxPool(tf.keras.Model):
                               padding=self.padding)                    
 
 class channel_atttention(tf.keras.Model):
-    def __init__(self, n_filters, ratio=16):
+    def __init__(self, n_filters, ratio=16, outputSize=1):
         super(channel_atttention, self).__init__()
         # self.avg_pool = layers.MaxPool2D(pool_size=(1,64,1,1), strides=1)#GlobalAvgPool()
-        self.avg_pool = DepthMaxPool(64)
-        self.max_pool = DepthMaxPool(64)
+        # self.avg_pool = DepthMaxPool(64)
+        # self.max_pool = DepthMaxPool(64)
 
         # self.avg_pool =  tf.nn.max_pool(s,
                         # ksize=(1, 1, 1, 3),
@@ -169,21 +179,27 @@ class channel_atttention(tf.keras.Model):
         # self.max_pool = layers.MaxPool2D(pool_size=(1,64,1,1), strides=1)#MaxAvgPool()
         self.conv1 = Conv(n_filters//ratio, kernel_size=1)
         self.conv2 = Conv(n_filters, kernel_size=1)
-
+        self.outputSize = outputSize
         self.conv3 = Conv(n_filters//ratio, kernel_size=1)
         self.conv4 = Conv(n_filters, kernel_size=1)
 
     def call(self, inputs, activation=True, normalization=True, training=True):
         # conv1 = tf.reshape(self.avg_pool(inputs), (1, 1, 1, -1))
+        _, h, w, ch = K.int_shape(inputs)
+         
+        stride = np.floor(h/self.outputSize).astype(np.int32)
+        kernel = h - (self.outputSize-1) * stride
+        conv1 = avg_pool(pool_size=kernel, stride=stride)(inputs)
         # conv1 = self.avg_pool(inputs)
-        conv1 = tf.reduce_max(inputs, axis=[3], keepdims=True)
-        conv1 = (self.conv1(conv1, training=training))
+        # conv1 = tf.reduce_max(inputs, axis=[3], keepdims=True)
+        conv1 = self.conv1(conv1, training=training)
         conv1 = layers.ReLU()(conv1)
         conv2 = self.conv2(conv1, training=training)
 
         # conv3 = tf.reshape(self.max_pool(inputs), (1, 1, 1, -1))
+        conv3 = max_pool(pool_size=kernel, stride=stride)(inputs)
         # conv3 = self.max_pool(inputs)
-        conv3 = tf.reduce_max(inputs, axis=[3], keepdims=True)
+        # conv3 = tf.reduce_max(inputs, axis=[3], keepdims=True)
         
         conv3 = layers.ReLU()(self.conv3(conv3, training=training))
         conv3 = self.conv4(conv3, training=training)
@@ -197,6 +213,7 @@ class channel_atttention(tf.keras.Model):
 
 def Concat():
     return layers.concatenate()
+
 class Siamese(tf.keras.Model):
     def __init__(self, num_classes, input_shape=(None, None, None, 3), n_filters=64, **kwargs):
         super(Siamese, self).__init__(**kwargs)
@@ -268,13 +285,14 @@ class Siamese(tf.keras.Model):
         self.final_up3 = up_block(n_filters)
 
 
-        self.final_conv = Conv(2, kernel_size=1)
+        self.final_conv = Conv(1, kernel_size=1)
 
     def call(self, inputs, training=True):
         inputs0, inputs1 = inputs[:, :, :256, :], inputs[:, :, 256:, :]
-        
-        x0_0 = max_pool()(self.conv0_0(inputs0, training=training))
-        x1_0 = max_pool()(self.conv1_0(x0_0, training=training))
+        # inputs0 = Input((256, 512, 3))
+        # inputs1 = Input((256, 256, 3))
+        x0_0 = self.pool(self.conv0_0(inputs0, training=training))
+        x1_0 = self.pool(self.conv1_0(x0_0, training=training))
         x2_0 = self.pool(self.conv2_0(x1_0, training=training))
         x3_0 = self.pool(self.conv3_0(x2_0, training=training))
 
@@ -321,26 +339,21 @@ class Siamese(tf.keras.Model):
 
         out = layers.concatenate([_concat_0, _concat_1_1, _concat_2_2, _concat_3_3], axis=-1)
 
-        add_out = _concat_0 + _concat_1_1 + _concat_2_2 + _concat_3_3
+        # add_out = _concat_0 + _concat_1_1 + _concat_2_2 + _concat_3_3
 
-        CAM = self.cam(out, training=training)
-        CAM1 =self.cam1(add_out, training=training)
-        CAM1 = layers.concatenate([CAM1, CAM1, CAM1, CAM1], axis=-1)
-        # CAM1 = tf.repeat(CAM1, (1, 1, 1, 4))
-        add_cam = (out + CAM1)
-        out = CAM * add_cam
+        # CAM = self.cam(out, training=training)
+        # CAM1 =self.cam1(add_out, training=training)
+        # CAM1 = layers.concatenate([CAM1, CAM1, CAM1, CAM1], axis=-1)
+        # # CAM1 = tf.repeat(CAM1, (1, 1, 1, 4))
+        # add_cam = (out + CAM1)
+        # out = CAM * add_cam
         out = self.final_conv(out)
 
-        # x = reshape_into(out, inputs)
+        # # x = reshape_into(out, inputs)
 
-        # x = tf.keras.activations.softmax(x, axis=-1)
-
-        return out
-
-
-
+        # out = tf.keras.activations.softmax(out, axis=-1)
         out = tf.keras.activations.sigmoid(out)
-
+        # model = tf.keras.Model(inputs0, inputs1, out)
         return out
 
 class ResNet50Seg(tf.keras.Model):
