@@ -37,7 +37,7 @@ class Data_loader:
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         h, w = img.shape[:2]
         if masks:
-            img = self.get_labels(img[:, :h, :])
+            img = self.get_labels(img[:, :256, :])
         else:
             img = np.float32(img) / 255.0
 
