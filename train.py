@@ -10,6 +10,8 @@ import subprocess
 from tensorflow.keras import losses
 import tensorflow.keras.metrics as Metrics
 from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint, ReduceLROnPlateau, CSVLogger, TensorBoard
+from tensorflow.keras.utils import multi_gpu_model
+import tensorflow.keras.backend as K
 
 # tf.enable_v2_behavior()
 
@@ -21,6 +23,7 @@ from models import siamese
 # import helpers
 # import utils_ as utils
 # from utils_ import get_model
+
 # import matplotlib.pyplot as plt
 
 def str2bool(v):
@@ -59,8 +62,8 @@ parser.add_argument('--model', type=str, default="dunet", help='The model you ar
 args = parser.parse_args()
 gpu = str(args.gpu)
 os.environ['CUDA_VISIBLE_DEVICES']=  gpu
-
-
+tf.compat.v1.disable_eager_execution()
+print(tf.executing_eagerly())
 def load_datasets(path_dataset, batch_size):
     datasets = Data_loader(path_dataset, batch_size=batch_size)
     return datasets.data_generator(), datasets.data_generator(dataset='val')
@@ -108,6 +111,14 @@ n_epochs = args.num_epochs
 # model = model_loader.get_model(model_name)
 num_classes = 2
 model = siamese.Siamese(num_classes=num_classes,  input_shape=(None, 256, 512, 3))
+
+available_gpus = len(gpu.split(','))
+if available_gpus > 1:
+    model = multi_gpu_model(model, gpus=available_gpus)
+    print('Training with multiple %s GPUS'% available_gpus)
+
+
+
 ## Metrics
 loss_metric = tf.keras.metrics.Mean(name='train_loss')
 loss_fn = tf.keras.losses.BinaryCrossentropy(
@@ -176,9 +187,9 @@ model.fit_generator(train_data,
                     epochs=args.num_epochs, 
                     steps_per_epoch=len(train_filenames)//args.batch_size,
                     callbacks=[model_checkpoint, tensorboard])
-loss, acc = model.evaluate(val_data)
+# loss, acc = model.evaluate(val_data)
 
-print("Loss {}, Accuracy {}".format(loss, acc))
+# print("Loss {}, Accuracy {}".format(loss, acc))
 
 
 # for epoch in range(1):
