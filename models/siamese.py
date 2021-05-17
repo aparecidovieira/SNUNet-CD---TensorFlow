@@ -18,7 +18,7 @@ def reshape_into(inputs, input_to_copy):
 # convolution
 def convolution(filters, kernel_size, strides=1, dilation_rate=1, use_bias=True):
     return layers.Conv2D(filters, kernel_size, strides=strides, padding='same', use_bias=use_bias,
-                         kernel_regularizer=regularizers.l2(l=0.0003), dilation_rate=dilation_rate)
+                          dilation_rate=dilation_rate)
 
 # Depthwise convolution
 def depthwiseConv(kernel_size, strides=1, depth_multiplier=1, dilation_rate=1, use_bias=True):
@@ -43,7 +43,7 @@ def avg_pool(pool_size=2, stride=2):
 # convolution
 def Conv(n_filters, kernel_size=3, strides=1, dilation_rate=1, use_bias=True):
     return layers.Conv2D(n_filters, kernel_size, strides=strides, padding='same', use_bias=use_bias, 
-                        kernel_regularizer=regularizers.l2(l=0.0003), dilation_rate=dilation_rate)
+                         dilation_rate=dilation_rate)
 
 # Traspose convolution
 def Conv_trans(n_filters, kernel_size=2, strides=2, dilation_rate=1, use_bias=True):
@@ -57,7 +57,7 @@ class up_block(tf.keras.Model):
         self.stride = stride
         self.dilation_rate = dilation_rate
         self.conv_trans = Conv_trans(n_filters, kernel_size, stride)
-        self.bn = layers.BatchNormalization(epsilon=1e-3, momentum=0.993)
+        self.bn = layers.BatchNormalization()
 
 
     def call(self, inputs, activation=True, training=True):
@@ -75,7 +75,7 @@ class conv_layer(tf.keras.Model):
         self.stride = stride
         self.dilation_rate = dilation_rate
         self.conv = Conv(self.n_filters, self.kernel_size, self.stride, self.dilation_rate)
-        self.bn = layers.BatchNormalization(epsilon=1e-3, momentum=0.993)
+        self.bn = layers.BatchNormalization()
 
     def call(self, inputs, activation=True, normalization=True, training=True):
         x = self.conv(inputs, training=training)
@@ -94,12 +94,12 @@ class conv_block(tf.keras.Model):
         self.stride = stride
         self.dilation_rate = dilation_rate
         self.conv1 = Conv(self.n_filters, self.kernel_size, self.stride, self.dilation_rate)
-        self.conv2 = Conv(1 * self.n_filters, self.kernel_size, self.stride, self.dilation_rate)
-        self.identity = Conv(1 * self.n_filters, self.kernel_size, self.stride, self.dilation_rate)
-        self.bn1 = layers.BatchNormalization(epsilon=1e-3, momentum=0.993)
-        self.bn2 = layers.BatchNormalization(epsilon=1e-3, momentum=0.993)
-        self.bn3 = layers.BatchNormalization(epsilon=1e-3, momentum=0.993)
-        # self.bn4 = layers.BatchNormalization(epsilon=1e-3, momentum=0.993)
+        self.conv2 = Conv(2 * self.n_filters, self.kernel_size, self.stride, self.dilation_rate)
+        self.identity = Conv(2 * self.n_filters, self.kernel_size, self.stride, self.dilation_rate)
+        self.bn1 = layers.BatchNormalization()
+        self.bn2 = layers.BatchNormalization()
+        self.bn3 = layers.BatchNormalization()
+        self.bn4 = layers.BatchNormalization()
 
 
 
@@ -114,8 +114,9 @@ class conv_block(tf.keras.Model):
         x2 = layers.ReLU()(x2)
 
         identity = self.identity(inputs)
-        identity = self.bn3(identity, training=training)
+        # identity = self.bn3(identity, training=training)
         x2 = x2 + identity
+        x2 = self.bn3(x2, training=training)
         x2 = layers.ReLU()(x2)
         return x2
 
@@ -129,7 +130,7 @@ class Conv_BN(tf.keras.Model):
         self.strides = strides
 
         self.conv = convolution(filters=filters, kernel_size=kernel_size, strides=strides, dilation_rate=dilation_rate)
-        self.bn = layers.BatchNormalization(epsilon=1e-3, momentum=0.993)
+        self.bn = layers.BatchNormalization()
 
     def call(self, inputs, activation=True, training=True):
         x = self.conv(inputs)
@@ -183,13 +184,13 @@ class channel_atttention(tf.keras.Model):
         self.conv3 = Conv(n_filters//ratio, kernel_size=1)
         self.conv4 = Conv(n_filters, kernel_size=1)
 
-    def call(self, inputs, activation=True, normalization=True, training=True):
+    def call(self, inputs, training=True):
         # conv1 = tf.reshape(self.avg_pool(inputs), (1, 1, 1, -1))
-        _, h, w, ch = K.int_shape(inputs)
+        # _, h, w, ch = K.int_shape(inputs)
          
-        stride = np.floor(h/self.outputSize).astype(np.int32)
-        kernel = h - (self.outputSize-1) * stride
-        conv1 = avg_pool(pool_size=kernel, stride=stride)(inputs)
+        stride = 256#np.floor(h/self.outputSize).astype(np.int32)
+        kernel = 256#h - (self.outputSize-1) * stride
+        conv1 = max_pool(pool_size=kernel, stride=stride)(inputs)
         # conv1 = self.avg_pool(inputs)
         # conv1 = tf.reduce_max(inputs, axis=[3], keepdims=True)
         conv1 = self.conv1(conv1, training=training)
@@ -197,14 +198,15 @@ class channel_atttention(tf.keras.Model):
         conv2 = self.conv2(conv1, training=training)
 
         # conv3 = tf.reshape(self.max_pool(inputs), (1, 1, 1, -1))
-        conv3 = max_pool(pool_size=kernel, stride=stride)(inputs)
+        conv3 = avg_pool(pool_size=kernel, stride=stride)(inputs)
         # conv3 = self.max_pool(inputs)
         # conv3 = tf.reduce_max(inputs, axis=[3], keepdims=True)
         
-        conv3 = layers.ReLU()(self.conv3(conv3, training=training))
-        conv3 = self.conv4(conv3, training=training)
+        conv3 = self.conv3(conv3, training=training)
+        conv3 = layers.ReLU()(conv3)
+        conv4 = self.conv4(conv3, training=training)
         # layers.Add
-        out = conv2 + conv3
+        out = conv2 + conv4
         out = tf.keras.activations.sigmoid(out)
         return out
 
@@ -223,7 +225,7 @@ class Siamese(tf.keras.Model):
         # self.conv0_0 = conv_block(n_filters)
 
         ## Encoder Input 0
-        self.conv0_0 = conv_block(n_filters, 3)
+        self.conv0_0 = conv_block(n_filters)
         self.conv1_0 = conv_block(2 * n_filters)
         self.conv2_0 = conv_block(4 * n_filters)
         self.conv3_0 = conv_block(8 * n_filters)
@@ -288,19 +290,20 @@ class Siamese(tf.keras.Model):
         self.final_conv = Conv(1, kernel_size=1)
 
     def call(self, inputs, training=True):
+        # print(inputs.shape)
         inputs0, inputs1 = inputs[:, :, :256, :], inputs[:, :, 256:, :]
         # inputs0 = Input((256, 512, 3))
         # inputs1 = Input((256, 256, 3))
-        x0_0 = self.pool(self.conv0_0(inputs0, training=training))
-        x1_0 = self.pool(self.conv1_0(x0_0, training=training))
-        x2_0 = self.pool(self.conv2_0(x1_0, training=training))
-        x3_0 = self.pool(self.conv3_0(x2_0, training=training))
+        x0_0 = max_pool()(self.conv0_0(inputs0, training=training))
+        x1_0 = max_pool()(self.conv1_0(x0_0, training=training))
+        x2_0 = max_pool()(self.conv2_0(x1_0, training=training))
+        x3_0 = max_pool()(self.conv3_0(x2_0, training=training))
 
-        x0_1 = self.pool(self.conv0_1(inputs1, training=training))
-        x1_1 = self.pool(self.conv1_1(x0_1, training=training))
-        x2_1 = self.pool(self.conv2_1(x1_1, training=training))
-        x3_1 = self.pool(self.conv3_1(x2_1, training=training))
-        x4_1 = self.pool(self.conv4_1(x3_1, training=training))
+        x0_1 = max_pool()(self.conv0_1(inputs1, training=training))
+        x1_1 = max_pool()(self.conv1_1(x0_1, training=training))
+        x2_1 = max_pool()(self.conv2_1(x1_1, training=training))
+        x3_1 = max_pool()(self.conv3_1(x2_1, training=training))
+        x4_1 = max_pool()(self.conv4_1(x3_1, training=training))
 
         concat_x_3 = layers.concatenate([x3_0, x3_1], axis=-1)
         concat_x_2 = layers.concatenate([x2_0, x2_1], axis=-1)
@@ -332,22 +335,24 @@ class Siamese(tf.keras.Model):
         _concat_3_3 = self.conv_up_0_3(layers.concatenate([trans_3_3, concat_x_0, _concat_0, _concat_2_2, _concat_1_1], axis=-1), training=training)     
 
 
-        _concat_3_3 = self.final_up3(_concat_3_3)
-        _concat_2_2 = self.final_up2(_concat_2_2)
-        _concat_1_1 = self.final_up1(_concat_1_1)
-        _concat_0 = self.final_up0(_concat_0)
+        _concat_3_3 = self.final_up3(_concat_3_3, training=training)
+        _concat_2_2 = self.final_up2(_concat_2_2, training=training)
+        _concat_1_1 = self.final_up1(_concat_1_1, training=training)
+        _concat_0 = self.final_up0(_concat_0, training=training)
 
         out = layers.concatenate([_concat_0, _concat_1_1, _concat_2_2, _concat_3_3], axis=-1)
 
-        # add_out = _concat_0 + _concat_1_1 + _concat_2_2 + _concat_3_3
+        add_out = _concat_0 + _concat_1_1 + _concat_2_2 + _concat_3_3
 
-        # CAM = self.cam(out, training=training)
-        # CAM1 =self.cam1(add_out, training=training)
-        # CAM1 = layers.concatenate([CAM1, CAM1, CAM1, CAM1], axis=-1)
-        # # CAM1 = tf.repeat(CAM1, (1, 1, 1, 4))
-        # add_cam = (out + CAM1)
+        CAM = self.cam(out, training=training)
+        CAM1 =self.cam1(add_out, training=training)
+        CAM1 = layers.concatenate([CAM1, CAM1, CAM1, CAM1], axis=-1)
+        # CAM1 = tf.repeat(CAM1, (1, 1, 1, 4))
+
+        add_cam = out + CAM1
+        out = layers.Multiply()([CAM, add_cam])
         # out = CAM * add_cam
-        out = self.final_conv(out)
+        out = self.final_conv(out, training=training)
 
         # # x = reshape_into(out, inputs)
 
