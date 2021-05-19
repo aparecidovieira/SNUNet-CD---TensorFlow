@@ -17,9 +17,9 @@ I changed the convolution block to ResNet blocks with 2 convolutions of 3x3, als
 
 # Environment
 
-TensorFlow >= 2.0
-OpenCV
-Glob
+* TensorFlow >= 2.0
+* OpenCV
+* Glob
 
 Check the file environment.txt
 
