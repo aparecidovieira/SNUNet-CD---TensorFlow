@@ -15,9 +15,14 @@ I changed the convolution block to ResNet blocks with 2 convolutions of 3x3, als
 ![results3](Images/image3.png)
 
 
-# Envrionment
+# Environment
+
+TensorFlow >= 2.0
+OpenCV
+Glob
 
 Check the file environment.txt
+
 
 # Training Model
 ```
