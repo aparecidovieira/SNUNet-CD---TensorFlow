@@ -11,7 +11,7 @@ Change detection is an important task in remote sensing (RS) image analysis. It 
 
 I changed the convolution block to ResNet blocks with 2 convolutions of 3x3, also the original code presents some difference with proposal architecture, the attention module CAM presents average pooling and max pooling on the paper, but its implemented with both max pooling on the official implementation, I implemented as the paper. It presented better results with this implementation. Also the skip connections happen after the pooling layer different from the offical presentation making less memory consuming it same results.
 
-![results2](Images/image2.png)
+![results2](Images/image2.jpg)
 ![results3](Images/image3.png)
 
 
