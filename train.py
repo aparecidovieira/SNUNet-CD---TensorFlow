@@ -35,7 +35,7 @@ def str2bool(v):
         raise argparse.ArgumentTypeError('Boolean value expected.')
 # config.gpu_options.allow_growth = True
 parser = argparse.ArgumentParser()
-parser.add_argument('--num_epochs', type=int, default=10, help='Number of epochs to train for')
+parser.add_argument('--num_epochs', type=int, default=40, help='Number of epochs to train for')
 parser.add_argument('--save', type=int, default=4, help='Interval for saving weights')
 parser.add_argument('--gpu', type=str, default='0', help='Choose GPU device to be used')
 parser.add_argument('--mode', type=str, default="train", help='Select "train", "test", or "predict" mode. \
@@ -63,6 +63,7 @@ args = parser.parse_args()
 gpu = str(args.gpu)
 os.environ['CUDA_VISIBLE_DEVICES']=  gpu
 tf.compat.v1.disable_eager_execution()
+# tf.disable_v2_behavior()
 print(tf.executing_eagerly())
 def load_datasets(path_dataset, batch_size):
     datasets = Data_loader(path_dataset, batch_size=batch_size)
@@ -122,7 +123,7 @@ if available_gpus > 1:
 ## Metrics
 loss_metric = tf.keras.metrics.Mean(name='train_loss')
 loss_fn = tf.keras.losses.BinaryCrossentropy(
-    from_logits=True, label_smoothing=0, reduction="auto", name="binary_crossentropy"
+    from_logits=False, label_smoothing=0, reduction="auto", name="binary_crossentropy"
 )
 
 optimizer = tf.keras.optimizers.Adam(0.0001)
@@ -183,7 +184,7 @@ model.compile(optimizer=optimizer,
               loss=loss_fn,
               metrics=metrics_list)
 
-model.fit_generator(train_data, 
+model.fit(train_data, 
                     epochs=args.num_epochs, 
                     steps_per_epoch=len(train_filenames)//args.batch_size,
                     callbacks=[model_checkpoint, tensorboard])
