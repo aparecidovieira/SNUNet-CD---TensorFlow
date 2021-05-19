@@ -15,6 +15,13 @@ I changed the convolution block to ResNet blocks with 2 convolutions of 3x3, als
 ![results3](Images/image3.png)
 
 
+# Run Code
+"""
+python train.py --dataset dataset/ --model siamese --gpu 0 --batch_size 6
+
+"""
+
+
 # Results
 
 ![results0](Images/image0.png)
