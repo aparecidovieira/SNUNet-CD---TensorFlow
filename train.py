@@ -1,215 +1,424 @@
-from numpy.lib.histograms import histogram
+
 import tensorflow as tf
-import tensorflow.compat.v1 as v1
-import numpy as np
-import time, datetime
-import argparse
-import random
-import os, sys, shutil, glob
-import subprocess
-from tensorflow.keras import losses
-import tensorflow.keras.metrics as Metrics
-from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint, ReduceLROnPlateau, CSVLogger, TensorBoard
-from tensorflow.keras.utils import multi_gpu_model
+from tensorflow.keras import layers, regularizers
+from tensorflow.keras.layers import Input
 import tensorflow.keras.backend as K
+import numpy as np
 
-# tf.enable_v2_behavior()
+def GlobalAvgPool():
+    return tf.keras.layers.GlobalAveragePooling2D()
 
-# os.environ['TF_CPP_MIN_LOG_LEVEL']='2'
-# from tensorflow.python.client import device_lib
-from utils.data_loader import  Data_loader, onEachEpochCheckPoint
-# from utils import model_loader
-from models import siamese
-# import helpers
-# import utils_ as utils
-# from utils_ import get_model
-
-# import matplotlib.pyplot as plt
-
-def str2bool(v):
-    if v.lower() in ('yes', 'true', 't', 'y', '1'):
-        return True
-    elif v.lower() in ('no', 'false', 'f', 'n', '0'):
-        return False
-    else:
-        raise argparse.ArgumentTypeError('Boolean value expected.')
-# config.gpu_options.allow_growth = True
-parser = argparse.ArgumentParser()
-parser.add_argument('--num_epochs', type=int, default=40, help='Number of epochs to train for')
-parser.add_argument('--save', type=int, default=4, help='Interval for saving weights')
-parser.add_argument('--gpu', type=str, default='0', help='Choose GPU device to be used')
-parser.add_argument('--mode', type=str, default="train", help='Select "train", "test", or "predict" mode. \
-    Note that for prediction mode you have to specify an image to run the model on.')
-parser.add_argument('--checkpoint', type=str, default="./checkpoint", help='Checkpoint folder.')
-parser.add_argument('--class_balancing', type=str2bool, default=False, help='Whether to use median frequency class weights to balance the classes in the loss')
-parser.add_argument('--image', type=str, default=None, help='The image you want to predict on. Only valid in "predict" mode.')
-parser.add_argument('--continue_training', type=str2bool, default=False, help='Whether to continue training from a checkpoint')
-parser.add_argument('--dataset', type=str, default='AIRBUS', help='Dataset you are using.')
-parser.add_argument('--load_data', type=str2bool, default=True, help='Dataset loading type.')
-parser.add_argument('--act', type=str2bool, default=True, help='True if sigmoid or false for softmax')
-parser.add_argument('--crop_height', type=int, default=256, help='Height of cropped input image to network')
-parser.add_argument('--crop_width', type=int, default=256, help='Width of cropped input image to network')
-parser.add_argument('--batch_size', type=int, default=16, help='Number of images in each batch')
-parser.add_argument('--num_val_images', type=int, default=200, help='The number of images to used for validations')
-parser.add_argument('--h_flip', type=str2bool, default=True, help='Whether to randomly flip the image horizontally for data augmentation')
-parser.add_argument('--v_flip', type=str2bool, default=True, help='Whether to randomly flip the image vertically for data augmentation')
-parser.add_argument('--brightness', type=float, default=None, help='Whether to randomly change the image brightness for data augmentation. Specifies the max bightness change.')
-parser.add_argument('--rotation', type=float, default=None, help='Whether to randomly rotate the image for data augmentation. Specifies the max rotation angle.')
-parser.add_argument('--model', type=str, default="dunet", help='The model you are using. Currently supports:\
-     FPN, RFPN, Siamese')
+def MaxAvgPool():
+    return tf.keras.layers.GlobalMaxPooling2D()
 
 
-args = parser.parse_args()
-gpu = str(args.gpu)
-os.environ['CUDA_VISIBLE_DEVICES']=  gpu
-tf.compat.v1.disable_eager_execution()
-# tf.disable_v2_behavior()
-print(tf.executing_eagerly())
-def load_datasets(path_dataset, batch_size):
-    datasets = Data_loader(path_dataset, batch_size=batch_size)
-    return datasets.data_generator(), datasets.data_generator(dataset='val')
+def reshape_into(inputs, input_to_copy):
+    return tf.image.resize(inputs, (input_to_copy.shape[1], input_to_copy.shape[2]), method=tf.image.ResizeMethod.BILINEAR)
 
-def load_info():
-    dataset_path = args.dataset
-    batch_size = args.batch_size
-    train_dataset, val_dataset = load_datasets(dataset_path, batch_size)
+# convolution
+def convolution(filters, kernel_size, strides=1, dilation_rate=1, use_bias=True):
+    return layers.Conv2D(filters, kernel_size, strides=strides, padding='same', use_bias=use_bias,
+                          dilation_rate=dilation_rate)
 
-    return train_dataset, val_dataset
-
-def IoU(y_true, y_pred):
-    def function(y_true, y_pred):
-        intersection = (y_true * y_pred).sum()
-        union = y_true.sum() + y_pred.sum() - intersection
-        iou = (intersection + 1e-15)/(union + 1e-15)
-        iou = iou.astype(np.float32)
-        return iou
-    return tf.numpy_function(function, [y_true, y_pred], tf.float32)
-
-def iou(y_true, y_pred):
-     def f(y_true, y_pred):
-        #  intersection = K.sum(y_true_f * y_pred_f, axis=-1)
-        #  union = K.sum(y_true_f + y_pred_f, axis=-1) - intersection
-         intersection = (y_true * y_pred).sum()
-         union = y_true.sum() + y_pred.sum() - intersection
-         x = (intersection + 1e-15) / (union + 1e-15)
-         x = x.astype(np.float32)
-         return x
-     return tf.numpy_function(f, [y_true, y_pred], tf.float32)
+# Depthwise convolution
+def depthwiseConv(kernel_size, strides=1, depth_multiplier=1, dilation_rate=1, use_bias=True):
+    return layers.DepthwiseConv2D(kernel_size, strides=strides, depth_multiplier=depth_multiplier,
+                                  padding='same', use_bias=use_bias, kernel_regularizer=regularizers.l2(l=0.0001),
+                                  dilation_rate=dilation_rate)
 
 
+# Depthwise convolution
+def separableConv(filters, kernel_size, strides=1, dilation_rate=1, use_bias=True):
+    return layers.SeparableConv2D(filters, kernel_size, strides=strides, padding='same', use_bias=use_bias,
+                                  depthwise_regularizer=regularizers.l2(l=0.0001),
+                                  pointwise_regularizer=regularizers.l2(l=0.0003), dilation_rate=dilation_rate)
 
-model_name = args.model
-checkpoint_path = args.checkpoint  + '/' + model_name + '/'
-os.makedirs(checkpoint_path, exist_ok=True)
-def samples():
-    train_filenames = [os.path.basename(name) for name in glob.glob(args.dataset + 'train/*')]
-    val_filenames = [os.path.basename(name) for name in glob.glob(args.dataset + 'val/*')]
-    return train_filenames, val_filenames
 
-train_filenames, val_filenams = samples()
-train_data, val_data = load_info()
-n_epochs = args.num_epochs
-# model = model_loader.get_model(model_name)
-num_classes = 2
-model = siamese.Siamese(num_classes=num_classes,  input_shape=(None, 256, 512, 3))
+def max_pool(pool_size=2, stride=2):
+    return layers.MaxPool2D(pool_size=(pool_size, pool_size), strides=(stride, stride))
 
-available_gpus = len(gpu.split(','))
-if available_gpus > 1:
-    model = multi_gpu_model(model, gpus=available_gpus)
-    print('Training with multiple %s GPUS'% available_gpus)
+def avg_pool(pool_size=2, stride=2):
+    return layers.AveragePooling2D(pool_size=(pool_size, pool_size), strides=(stride, stride))
+
+# convolution
+def Conv(n_filters, kernel_size=3, strides=1, dilation_rate=1, use_bias=True):
+    return layers.Conv2D(n_filters, kernel_size, strides=strides, padding='same', use_bias=use_bias, 
+                         dilation_rate=dilation_rate)
+
+# Traspose convolution
+def Conv_trans(n_filters, kernel_size=2, strides=2, dilation_rate=1, use_bias=True):
+    return layers.Conv2DTranspose(n_filters, kernel_size, strides=(strides, strides), padding='same', use_bias=use_bias,
+                                  kernel_regularizer=regularizers.l2(l=0.0003), dilation_rate=dilation_rate)
+class up_block(tf.keras.Model):
+    def __init__(self, n_filters, kernel_size=2, stride=2, dilation_rate=1, trans=True):
+        super(up_block, self).__init__()
+        self.n_filters = n_filters
+        self.kernel_size = kernel_size
+        self.stride = stride
+        self.dilation_rate = dilation_rate
+        self.conv_trans = Conv_trans(n_filters, kernel_size, stride)
+        self.bn = layers.BatchNormalization()
+
+
+    def call(self, inputs, activation=True, training=True):
+        x = self.conv_trans(inputs)
+        x = self.bn(x, training=training)
+        if activation:
+            x = layers.ReLU()(x)
+        return x
+
+class conv_layer(tf.keras.Model):
+    def __init__(self, n_filters, kernel_size, stride=1, dilation_rate=1):
+        super(conv_layer, self).__init__()
+        self.n_filters = n_filters
+        self.kernel_size = kernel_size
+        self.stride = stride
+        self.dilation_rate = dilation_rate
+        self.conv = Conv(self.n_filters, self.kernel_size, self.stride, self.dilation_rate)
+        self.bn = layers.BatchNormalization()
+
+    def call(self, inputs, activation=True, normalization=True, training=True):
+        x = self.conv(inputs, training=training)
+        if normalization:
+            x = self.bn(inputs, training=training)
+        if activation:
+            x = layers.ReLU()(x)
+        return x
+
+
+class conv_block(tf.keras.Model):
+    def __init__(self, n_filters, kernel_size=3, stride=1, dilation_rate=1):
+        super(conv_block, self).__init__()
+        self.n_filters = n_filters
+        self.kernel_size = kernel_size
+        self.stride = stride
+        self.dilation_rate = dilation_rate
+        self.conv1 = Conv(self.n_filters, self.kernel_size, self.stride, self.dilation_rate)
+        self.conv2 = Conv(2 * self.n_filters, self.kernel_size, self.stride, self.dilation_rate)
+        self.identity = Conv(2 * self.n_filters, self.kernel_size, self.stride, self.dilation_rate)
+        self.bn1 = layers.BatchNormalization()
+        self.bn2 = layers.BatchNormalization()
+        self.bn3 = layers.BatchNormalization()
+        self.bn4 = layers.BatchNormalization()
 
 
 
-## Metrics
-loss_metric = tf.keras.metrics.Mean(name='train_loss')
-loss_fn = tf.keras.losses.BinaryCrossentropy(
-    from_logits=False, label_smoothing=0, reduction="auto", name="binary_crossentropy"
-)
+    def call(self, inputs, activation=True, normalization=True, training=True):
 
-optimizer = tf.keras.optimizers.Adam(0.0001)
-# loss_fn = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True)
+        x1 = self.conv1(inputs)
+        x1 = self.bn1(x1, training=training)
+        x1 = layers.ReLU()(x1)
 
-@tf.function
-def train_step(inputs, labels):
-    with tf.GradientTape() as tape:
-        inputs = tf.convert_to_tensor(inputs)
-        labels = tf.convert_to_tensor(labels)
-        predictions = model(inputs, training=True)
+        x2 = self.conv2(x1)
+        x2 = self.bn2(x2, training=training)
+        x2 = layers.ReLU()(x2)
 
-        regularization_loss = tf.math.add_n(model.losses)
-        pred_loss = loss_fn(labels, predictions)
-        total_loss = pred_loss + regularization_loss
-
-    gradients = tape.gradient(total_loss, model.trainable_variables)
-    optimizer.apply_gradients(zip(gradients, model.trainable_variables))
-
-    ## Update the metrics
-    loss_metric.update_state(total_loss)
-
-save_path = checkpoint_path + '/' + model_name
-dataset_path = args.dataset
-val_path = dataset_path + '/val/'
-def parse_image(img_path:str) -> dict:
-
-    image = tf.io.read_file(img_path)
-    image = tf.io.decode_png(image, channels = 3)
-    # image = tf.image.convert_image_dtype(image, tf.unint8)
-    mask_path = tf.strings.regex_replace(img_path, 'train', 'train_labels')
-    mask_path = tf.strings.regex_replace(mask_path, 'val', 'val_labels')
-    mask = tf.io.read_file(mask_path)
-    mask = tf.io.decode_png(mask)
-    mask = tf.where(mask == 255, np.dtype('uint8').type(1), mask)
-
-    return {'image': image, 'segmentation_mask': mask}
-SEED = 23
-
-callbacks = [
-    ModelCheckpoint(model)
-]
-
-# train_dataset = tf.data.Dataset.list_files(dataset_path + 'train/' + "*.png", seed=SEED)
-# train_dataset = train_dataset.map(parse_image)
-# # dataset_path = args.dataset
-# val_dataset = tf.data.Dataset.list_files(dataset_path + 'val/' + "*.png", seed=SEED)
-# val_dataset =val_dataset.map(parse_image)
-# # train_input_names = train_data.train_filenames
-# dataset = {'train': train_dataset, 'val':val_dataset}
-
-tensorboard = TensorBoard(log_dir=checkpoint_path, histogram_freq=0, write_graph=True, write_images=True)
-weights_path = checkpoint_path + model_name + 'weights_{epoch:02d}.h5'
-model_checkpoint = onEachEpochCheckPoint(model, dataset_path, val_path, checkpoint_path )
-
-metrics_list = ['accuracy',  tf.keras.metrics.Recall(), tf.keras.metrics.Precision(), Metrics.MeanIoU(num_classes=num_classes)]
-model.compile(optimizer=optimizer,
-              loss=loss_fn,
-              metrics=metrics_list)
-
-model.fit(train_data, 
-                    epochs=args.num_epochs, 
-                    steps_per_epoch=len(train_filenames)//args.batch_size,
-                    callbacks=[model_checkpoint, tensorboard])
-# loss, acc = model.evaluate(val_data)
-
-# print("Loss {}, Accuracy {}".format(loss, acc))
+        identity = self.identity(inputs)
+        identity = self.bn3(identity, training=training)
+        x2 = x2 + identity
+        x2 = self.bn4(x2, training=training)
+        x2 = layers.ReLU()(x2)
+        return x2
 
 
-# for epoch in range(1):
-#     id_list = 32#len(train_dataset)
-#     num_iters = int(np.floor((id_list) / args.batch_size))
+class Conv_BN(tf.keras.Model):
+    def __init__(self, filters, kernel_size, strides=1, dilation_rate=1):
+        super(Conv_BN, self).__init__()
 
-#     for _ in range(num_iters):
-#         inputs, labels = next(train_data)
+        self.filters = filters
+        self.kernel_size = kernel_size
+        self.strides = strides
 
-#             # print(inputs.shape, labels.shape)
-#         train_step(inputs, labels)
-#         # train_data.next()
-#     print('Done epoch here', epoch)
-# model.save( save_path+ '.h5')
-# model.compile(optimizer='adam',
-#               loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True),
-#               metrics=['accuracy'])
+        self.conv = convolution(filters=filters, kernel_size=kernel_size, strides=strides, dilation_rate=dilation_rate)
+        self.bn = layers.BatchNormalization()
 
-# model.fit(train_data, epochs=1)
-# loss, acc = model.evaluate(val_data)
+    def call(self, inputs, activation=True, training=True):
+        x = self.conv(inputs)
+        x = self.bn(x, training=training)
+        if activation:
+            x = layers.ReLU()(x)
 
-# print("Loss {}, Accuracy {}".format(loss, acc))
+        return x
+
+
+# class AdaptivePool(tf.keras.Model):
+#     def __init__(self, pool_size, kernel_size=3):
+#         super(AdaptivePool, self).__init__()
+
+
+class DepthMaxPool(tf.keras.Model):
+    def __init__(self, pool_size, strides=None, padding="VALID", **kwargs):
+        super(DepthMaxPool, self).__init__()
+        if strides is None:
+            strides = pool_size
+        self.pool_size = pool_size
+        self.strides = strides
+        self.padding = padding
+    def call(self, inputs, type_='MAX'):
+        if type_ == 'MAX':
+            return tf.nn.max_pool(inputs,
+                              ksize=(1, 1, 1, self.pool_size),
+                              strides=(1, 1, 1, self.pool_size),
+                              padding=self.padding)
+        else:
+            return tf.nn.avg_pool(inputs,
+                              ksize=(1, 1, 1, self.pool_size),
+                              strides=(1, 1, 1, self.pool_size),
+                              padding=self.padding)                    
+
+class channel_atttention(tf.keras.Model):
+    def __init__(self, n_filters, ratio=16, outputSize=1):
+        super(channel_atttention, self).__init__()
+        # self.avg_pool = layers.MaxPool2D(pool_size=(1,64,1,1), strides=1)#GlobalAvgPool()
+        # self.avg_pool = DepthMaxPool(64)
+        # self.max_pool = DepthMaxPool(64)
+
+        # self.avg_pool =  tf.nn.max_pool(s,
+                        # ksize=(1, 1, 1, 3),
+                        # strides=(1, 1, 1, 3),
+                        # padding="VALID")
+        # self.max_pool = layers.MaxPool2D(pool_size=(1,64,1,1), strides=1)#MaxAvgPool()
+        self.conv1 = Conv(n_filters//ratio, kernel_size=1)
+        self.conv2 = Conv(n_filters, kernel_size=1)
+        self.outputSize = outputSize
+        self.conv3 = Conv(n_filters//ratio, kernel_size=1)
+        self.conv4 = Conv(n_filters, kernel_size=1)
+
+    def call(self, inputs, training=True):
+        # conv1 = tf.reshape(self.avg_pool(inputs), (1, 1, 1, -1))
+        # _, h, w, ch = K.int_shape(inputs)
+         
+        stride = 256#np.floor(h/self.outputSize).astype(np.int32)
+        kernel = 256#h - (self.outputSize-1) * stride
+        conv1 = max_pool(pool_size=kernel, stride=stride)(inputs)
+        conv1 = conv1 * inputs
+        # conv1 = self.avg_pool(inputs)
+        # conv1 = tf.reduce_max(inputs, axis=[3], keepdims=True)
+        conv1 = self.conv1(conv1, training=training)
+        conv1 = layers.ReLU()(conv1)
+        conv2 = self.conv2(conv1, training=training)
+
+        # conv3 = tf.reshape(self.max_pool(inputs), (1, 1, 1, -1))
+        conv3 = avg_pool(pool_size=kernel, stride=stride)(inputs)
+        conv3 = conv3 * inputs
+
+        # conv3 = self.max_pool(inputs)
+        # conv3 = tf.reduce_max(inputs, axis=[3], keepdims=True)
+        
+        conv3 = self.conv3(conv3, training=training)
+        conv3 = layers.ReLU()(conv3)
+        conv4 = self.conv4(conv3, training=training)
+        # layers.Add
+        out = conv2 + conv4
+        # out = tf.keras.activations.sigmoid(out)
+        out = layers.Activation('sigmoid')(out)
+
+        return out
+
+# def adapPool():
+
+
+def Concat():
+    return layers.concatenate()
+
+class Siamese(tf.keras.Model):
+    def __init__(self, num_classes, input_shape=(None, None, None, 3), n_filters=64, **kwargs):
+        super(Siamese, self).__init__(**kwargs)
+        print(n_filters, 'Number of filters ')
+        self.pool = max_pool()
+        # self.concat = Concat()
+        # self.conv0_0 = conv_block(n_filters)
+
+        ## Encoder Input 0
+        self.conv0_0 = conv_block(n_filters)
+        self.conv1_0 = conv_block(2 * n_filters)
+        self.conv2_0 = conv_block(4 * n_filters)
+        self.conv3_0 = conv_block(8 * n_filters)
+
+        ## Encoder Input 1
+        self.conv0_1 = conv_block(n_filters)
+        self.conv1_1 = conv_block(2 * n_filters)
+        self.conv2_1 = conv_block(4 * n_filters)
+        self.conv3_1 = conv_block(8 * n_filters)
+        self.conv4_1 = conv_block(16 * n_filters)
+
+
+        ## Upsampling - Decoder 
+
+        self.conv_up_0_0 = conv_block(n_filters)
+        self.conv_up_0_1 = conv_block(n_filters)
+        self.conv_up_0_2 = conv_block(n_filters)
+        self.conv_up_0_3 = conv_block(n_filters)
+
+
+        self.conv_up_1_0 = conv_block(2 * n_filters)
+        self.conv_up_1_1 = conv_block(2 * n_filters)
+        self.conv_up_1_2 = conv_block(2 * n_filters)
+
+
+        self.conv_up_2_0 = conv_block(4 * n_filters)
+        self.conv_up_2_1 = conv_block(4 * n_filters)
+        self.conv_up_2_2 = conv_block(4 * n_filters)
+
+
+        self.conv_up_3_0 = conv_block(8 * n_filters)
+        self.conv_up_3_1 = conv_block(8 * n_filters)
+
+
+        self.up0_1 = up_block(n_filters)
+        self.up0_0 = up_block(n_filters)
+        self.up0_2 = up_block(n_filters)
+        self.up0_3 = up_block(n_filters)
+
+
+        self.up1_1 = up_block(2 * n_filters)
+        self.up1_0 = up_block(2 * n_filters)
+        self.up1_2 = up_block(2 * n_filters)
+
+
+        self.up2_1 = up_block(4 * n_filters)
+        self.up2_0 = up_block(4 * n_filters)
+
+        self.up3_1 = up_block(4 * n_filters)
+        self.up3_0 = up_block(8 * n_filters)
+
+        self.cam = channel_atttention(4 * n_filters)
+        self.cam1 = channel_atttention(n_filters, ratio=4)
+
+
+        self.final_up0 = up_block(n_filters)
+        self.final_up1 = up_block(n_filters)
+        self.final_up2 = up_block(n_filters)
+        self.final_up3 = up_block(n_filters)
+
+
+        self.final_conv = Conv(1, kernel_size=1)
+
+    def call(self, inputs, training=True):
+        # print(inputs.shape)
+        inputs0, inputs1 = inputs[:, :, :256, :], inputs[:, :, 256:, :]
+        # inputs0 = Input((256, 512, 3))
+        # inputs1 = Input((256, 256, 3))
+        x0_0 = max_pool()(self.conv0_0(inputs0, training=training))
+        x1_0 = max_pool()(self.conv1_0(x0_0, training=training))
+        x2_0 = max_pool()(self.conv2_0(x1_0, training=training))
+        x3_0 = max_pool()(self.conv3_0(x2_0, training=training))
+
+        x0_1 = max_pool()(self.conv0_1(inputs1, training=training))
+        x1_1 = max_pool()(self.conv1_1(x0_1, training=training))
+        x2_1 = max_pool()(self.conv2_1(x1_1, training=training))
+        x3_1 = max_pool()(self.conv3_1(x2_1, training=training))
+        x4_1 = max_pool()(self.conv4_1(x3_1, training=training))
+
+        concat_x_3 = layers.concatenate([x3_0, x3_1], axis=-1)
+        concat_x_2 = layers.concatenate([x2_0, x2_1], axis=-1)
+        concat_x_1 = layers.concatenate([x1_0, x1_1], axis=-1)
+        concat_x_0 = layers.concatenate([x0_0, x0_1], axis=-1)
+
+        trans_0 = self.up0_0(concat_x_1, training=training)
+        _concat_0 = self.conv_up_0_0(layers.concatenate([concat_x_0, trans_0], axis=-1), training=training)
+
+        trans_1 = self.up1_0(concat_x_2, training=training)
+        _concat_1 = self.conv_up_1_0(layers.concatenate([trans_1, concat_x_1], axis=-1), training=training)
+        trans_1_1 = self.up0_1(_concat_1, training=training)
+        _concat_1_1 = self.conv_up_0_1(layers.concatenate([trans_1_1, concat_x_0, _concat_0], axis=-1), training=training)
+
+        trans_2 = self.up2_0(concat_x_3, training=training)
+        _concat_2 = self.conv_up_2_0(layers.concatenate([trans_2, concat_x_2], axis=-1), training=training)
+        trans_2_1 = self.up1_1(_concat_2, training=training)
+        _concat_2_1 = self.conv_up_1_1(layers.concatenate([trans_2_1, concat_x_1, _concat_1], axis=-1), training=training)
+        trans_2_2 = self.up0_2(_concat_2_1, training=training)
+        _concat_2_2 = self.conv_up_0_2(layers.concatenate([trans_2_2, concat_x_0, _concat_1_1, _concat_0], axis=-1), training=training)
+
+        trans_3 = self.up3_0(x4_1, training=training)
+        _concat_3 = self.conv_up_3_0(layers.concatenate([trans_3, concat_x_3], axis=-1), training=training)
+        trans_3_1 = self.up2_1(_concat_3, training=training)
+        _concat_3_1 = self.conv_up_2_1(layers.concatenate([trans_3_1, concat_x_2, _concat_2], axis=-1), training=training)
+        trans_3_2 = self.up1_2(_concat_3_1, training=training)
+        _concat_3_2 = self.conv_up_1_2(layers.concatenate([trans_3_2, concat_x_1, _concat_2_1, _concat_1], axis=-1), training=training)     
+        trans_3_3 = self.up0_3(_concat_3_2, training=training)
+        _concat_3_3 = self.conv_up_0_3(layers.concatenate([trans_3_3, concat_x_0, _concat_0, _concat_2_2, _concat_1_1], axis=-1), training=training)     
+
+
+        _concat_3_3 = self.final_up3(_concat_3_3, training=training)
+        _concat_2_2 = self.final_up2(_concat_2_2, training=training)
+        _concat_1_1 = self.final_up1(_concat_1_1, training=training)
+        _concat_0 = self.final_up0(_concat_0, training=training)
+
+        out = layers.concatenate([_concat_0, _concat_1_1, _concat_2_2, _concat_3_3], axis=-1)
+
+        add_out_0 = _concat_0 + _concat_1_1
+        add_out_1 = _concat_2_2 + _concat_3_3
+        add_out = add_out_0 + add_out_1
+
+        CAM = self.cam(out, training=training)
+        # CAM = layers.Activation('sigmoid')(CAM)
+        # CAM = tf.keras.activations.sigmoid(CAM)
+
+        CAM1 = self.cam1(add_out, training=training)
+        # CAM1 = layers.Activation('sigmoid')(CAM1)
+
+        # CAM1 = tf.keras.activations.sigmoid(CAM1)
+        
+        # CAM1 = layers.concatenate([CAM1, CAM1, CAM1, CAM1], axis=-1)
+        CAM1 = tf.keras.backend.repeat_elements(CAM1, 4, -1)
+
+        add_cam = out + CAM1
+        out = layers.Multiply()([CAM, add_cam])
+        # out = CAM * add_cam
+        out = self.final_conv(out, training=training)
+
+        # # x = reshape_into(out, inputs)
+
+        # out = tf.keras.activations.softmax(out, axis=-1)
+        # out = tf.keras.activations.sigmoid(out)
+        out = layers.Activation('sigmoid')(out)
+
+        # model = tf.keras.Model(inputs0, inputs1, out)
+        return out
+
+class ResNet50Seg(tf.keras.Model):
+    def __init__(self, num_classes, input_shape=(None, None, 3), weights='imagenet', **kwargs):
+        super(ResNet50Seg, self).__init__(**kwargs)
+        base_model = tf.keras.applications.resnet_v2.ResNet50V2(include_top=False, weights=weights,
+                                                             input_shape=input_shape, pooling='avg')
+
+        output_2 = base_model.get_layer('conv2_block2_out').output
+        output_3 = base_model.get_layer('conv3_block3_out').output
+        output_4 = base_model.get_layer('conv4_block5_out').output
+        output_5 = base_model.get_layer('conv5_block3_out').output
+        outputs = [output_5, output_4, output_3, output_2]
+
+        self.model_output = tf.keras.Model(inputs=base_model.input, outputs=outputs)
+
+        self.conv_up1 = Conv_BN(1024, 3)
+        self.conv_up2 = Conv_BN(512, 3)
+        self.conv_up3 = Conv_BN(256, 3)
+
+        self.classify = convolution(num_classes, 1, strides=1, dilation_rate=1, use_bias=True)
+
+    def call(self, inputs, training=True):
+
+        outputs = self.model_output(inputs, training=training)
+
+        x = reshape_into(outputs[0], outputs[1])
+        x = self.conv_up1(x, training=training) + outputs[1]
+        x = reshape_into(x, outputs[2])
+
+
+        x = self.conv_up2(x, training=training) + outputs[2]
+        x = reshape_into(x, outputs[3])
+
+
+        x = self.conv_up3(x, training=training) + outputs[3]
+        x = self.classify(x, training=training)
+
+        x = reshape_into(x, inputs)
+
+        x = tf.keras.activations.softmax(x, axis=-1)
+
+        return x
+
+
+ 
+
